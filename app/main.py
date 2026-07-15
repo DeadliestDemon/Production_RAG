@@ -56,3 +56,109 @@ async def lifespan(app: FastAPI):
         "extra_data": metrics.summary
     })
 
+limiter = Limiter(key_func=get_remote_address)
+
+app = FastAPI(
+    title="Production LangGraph API",
+    description="Production-like chat API",
+    version="1.0.0",
+    lifespan=lifespan
+)
+app.state.limiter = limiter
+
+@app.post("/chat", response_model=ChatResponse)
+@limiter.limit(get_settings().rate_limit)
+@traceable(name="chat_endpoint")
+async def chat(request: Request, body: ChatRequest):
+
+    with RequestTimer() as timer:
+        security_notes = []
+
+        is_allowed, cleaned_message, notes = security.check_input(body.message)
+        security_notes.extend(notes)
+
+        if not is_allowed:
+            logger.warning("Request blocked by security", exra={
+                "extra_data": {
+                    "reason": notes,
+                    "thread_id": body.thread_id
+                }
+            })
+            metrics.record_request(latency_ms=0, error=True)
+            raise HTTPException(
+                status_code=400,
+                detail="Your message was blocked by our security filters"
+            )
+        
+        cached_response = cache.get(cleaned_message)
+        if cached_response is not None:
+            metrics.record_request(latency_ms=0, cache_hit=True)
+            logger.info("Cache Hit", extra={
+                "extra_data": {
+                    "thread_id": body.thread_id
+                }
+            })
+            return ChatResponse(
+                response=cached_response,
+                thread_id=body.thread_id,
+                model_used="Cache",
+                cached=True,
+                processing_time_ms=0
+            )
+        
+        try:
+            result = agent.invoke(cleaned_message)
+        except Exception as e:
+            logger.error(f"Agent invocation failed: {e}", extra={
+                "extra_data": {
+                    "thread_id": body.thread_id,
+                    "error": str(e)
+                }
+            })
+            metrics.record_request(latency_ms=0, error=True)
+            raise HTTPException(
+                status_code=500,
+                detail="An error occured while processing your request"
+            )
+        
+        response_text = result["response"]
+        model_used = result["model_used"]
+
+        validated_response, output_warnings = security.check_output(response_text)
+        security_notes.extend(output_warnings)
+
+        cache.set(cleaned_message, validated_response)
+
+    input_tokens = int(len(cleaned_message.split()) * 1.3)
+    output_tokens = int(len(validated_response.split()) * 1.3)
+
+    metrics.record_request(
+        latency_ms=timer.elapsed_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_hit=False
+    )
+
+    if security_notes:
+        logger.info("Security notes", extra={
+            "extra_data": {
+                "notes": security_notes,
+                "thread_id": body.thread_id
+            }
+        })
+    
+    logger.info("Request completed", extra={
+        "extra_data": {
+            "thread_id": body.thread_id,
+            "model_used": model_used,
+            "latency_ms": round(timer.elapsed_ms, 2)
+        }
+    })
+
+    return ChatResponse(
+        response=validated_response,
+        thread_id=body.thread_id,
+        model_used=model_used,
+        cached=False,
+        processing_time_ms=round(timer.elapsed_ms, 2)
+    )
