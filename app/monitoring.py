@@ -7,11 +7,11 @@ from typing import Any, Callable
 
 class JSONFormatter(logging.Formatter):
 
-    def format(self, record):    
+    def format(self, record):
         log_obj = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
-            "message": record.message,
+            "message": record.getMessage(),
             "module": record.module,
             "function": record.funcName
         }
@@ -89,7 +89,7 @@ class MetricsCollector:
             "total_errors": self._errors_total,
             "error_rate": f"{error_rate:.2f}",
             "avg_latency_ms": round(avg_latency, 2),
-            "cache_hitrate": f"{cache_hitrate:.2f}",
+            "cache_hit_rate": f"{cache_hitrate:.2f}",
             "total_input_tokens": self._tokens_input,
             "total_output_tokens": self._tokens_output
         }

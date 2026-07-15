@@ -10,7 +10,7 @@ class ResponseCache:
     """
     def __init__(self, ttl_seconds: int = 300):
         self.ttl = ttl_seconds
-        self._cache = dict[str, dict] = {}
+        self._cache: dict[str, dict] = {}
         self._hits = 0
         self._misses = 0
 
